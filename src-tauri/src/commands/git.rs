@@ -2,6 +2,12 @@ use serde::Serialize;
 use tauri_plugin_shell::ShellExt;
 
 #[derive(Debug, Serialize)]
+pub struct FileDiff {
+    pub original: String,
+    pub modified: String,
+}
+
+#[derive(Debug, Serialize)]
 pub struct ChangedFile {
     pub status: String,
     pub path: String,
@@ -95,4 +101,66 @@ pub async fn get_commit_files(
     }
 
     Ok(files)
+}
+
+#[tauri::command]
+pub async fn get_file_diff(
+    app: tauri::AppHandle,
+    sha: String,
+    file_path: String,
+) -> Result<FileDiff, String> {
+    // Get parent SHA
+    let parent_output = app
+        .shell()
+        .command("git")
+        .args(["rev-parse", &format!("{}^", sha)])
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let has_parent = parent_output.status.success();
+    let parent_sha = if has_parent {
+        String::from_utf8_lossy(&parent_output.stdout).trim().to_string()
+    } else {
+        String::new()
+    };
+
+    // Get original content (parent version)
+    let original = if has_parent {
+        let output = app
+            .shell()
+            .command("git")
+            .args(["show", &format!("{}:{}", parent_sha, file_path)])
+            .output()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        if output.status.success() {
+            String::from_utf8_lossy(&output.stdout).to_string()
+        } else {
+            // File didn't exist in parent (added file)
+            String::new()
+        }
+    } else {
+        // No parent (initial commit) — original is empty
+        String::new()
+    };
+
+    // Get modified content (current commit version)
+    let mod_output = app
+        .shell()
+        .command("git")
+        .args(["show", &format!("{}:{}", sha, file_path)])
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let modified = if mod_output.status.success() {
+        String::from_utf8_lossy(&mod_output.stdout).to_string()
+    } else {
+        // File doesn't exist at this commit (deleted file)
+        String::new()
+    };
+
+    Ok(FileDiff { original, modified })
 }

@@ -7,3 +7,8 @@ export interface ChangedFile {
   insertions: number;
   deletions: number;
 }
+
+export interface FileDiff {
+  original: string;
+  modified: string;
+}
