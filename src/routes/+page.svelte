@@ -1,15 +1,45 @@
 <script lang="ts">
+  import { invoke } from '@tauri-apps/api/core';
   import type { Commit } from '$lib/components/graph/graphTypes';
+  import type { WorkingDirectoryStatus } from '$lib/components/detail/types';
   import CommitGraph from '$lib/components/graph/CommitGraph.svelte';
   import DetailPanel from '$lib/components/detail/DetailPanel.svelte';
 
   let selectedCommit = $state<Commit | null>(null);
+  let showWorkingDirectory = $state(false);
+  let hasChanges = $state(false);
   let splitPercent = $state(50);
   let dragging = $state(false);
   let containerEl: HTMLElement | undefined = $state();
 
+  let showDetailPanel = $derived(selectedCommit !== null || showWorkingDirectory);
+
+  // Check for working directory changes on load
+  async function checkForChanges() {
+    try {
+      const status = await invoke<WorkingDirectoryStatus>('get_working_directory_status');
+      hasChanges = status.staged.length > 0 || status.unstaged.length > 0;
+    } catch {
+      hasChanges = false;
+    }
+  }
+
+  $effect(() => {
+    checkForChanges();
+  });
+
   function handleCommitSelect(commit: Commit | null) {
+    showWorkingDirectory = false;
     selectedCommit = commit;
+  }
+
+  function handleWorkingDirSelect() {
+    selectedCommit = null;
+    showWorkingDirectory = true;
+  }
+
+  function handleRefresh() {
+    checkForChanges();
   }
 
   function startResize(e: MouseEvent) {
@@ -41,11 +71,15 @@
     class:dragging
     bind:this={containerEl}
   >
-    <div class="graph-pane" style="width: {selectedCommit ? splitPercent + '%' : '100%'}">
-      <CommitGraph oncommitselect={handleCommitSelect} />
+    <div class="graph-pane" style="width: {showDetailPanel ? splitPercent + '%' : '100%'}">
+      <CommitGraph
+        oncommitselect={handleCommitSelect}
+        onworkingdirselect={handleWorkingDirSelect}
+        {hasChanges}
+      />
     </div>
 
-    {#if selectedCommit}
+    {#if showDetailPanel}
       <div
         class="resize-handle"
         role="separator"
@@ -53,7 +87,11 @@
         onmousedown={startResize}
       ></div>
       <div class="detail-pane" style="width: {100 - splitPercent}%">
-        <DetailPanel commit={selectedCommit} />
+        <DetailPanel
+          commit={selectedCommit}
+          {showWorkingDirectory}
+          onrefresh={handleRefresh}
+        />
       </div>
     {/if}
   </main>

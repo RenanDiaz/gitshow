@@ -4,7 +4,12 @@
   import type { FileDiff } from './types';
   import DiffToolbar from './DiffToolbar.svelte';
 
-  let { sha, filePath }: { sha: string; filePath: string } = $props();
+  let { sha = '', filePath, staged = false, isWorkingDirectory = false }: {
+    sha?: string;
+    filePath: string;
+    staged?: boolean;
+    isWorkingDirectory?: boolean;
+  } = $props();
 
   let containerEl: HTMLDivElement | undefined = $state();
   let loading = $state(false);
@@ -113,17 +118,26 @@
     });
   }
 
-  async function loadDiff(commitSha: string, path: string) {
+  async function loadDiff(commitSha: string, path: string, workingDir: boolean, stagedDiff: boolean) {
     if (!monaco) return;
 
     loading = true;
     error = null;
 
     try {
-      const result = await invoke<{ original: string; modified: string }>('get_file_diff', {
-        sha: commitSha,
-        filePath: path,
-      });
+      let result: { original: string; modified: string };
+
+      if (workingDir) {
+        result = await invoke<{ original: string; modified: string }>('get_working_directory_diff', {
+          filePath: path,
+          staged: stagedDiff,
+        });
+      } else {
+        result = await invoke<{ original: string; modified: string }>('get_file_diff', {
+          sha: commitSha,
+          filePath: path,
+        });
+      }
 
       const language = getLanguage(path);
 
@@ -148,7 +162,7 @@
   onMount(async () => {
     await initMonaco();
     await createEditor();
-    await loadDiff(sha, filePath);
+    await loadDiff(sha, filePath, isWorkingDirectory, staged);
   });
 
   onDestroy(() => {
@@ -162,13 +176,19 @@
   // React to file/sha changes — reuse editor, update models
   let prevSha = '';
   let prevFilePath = '';
+  let prevStaged = false;
+  let prevIsWd = false;
   $effect(() => {
     const currentSha = sha;
     const currentPath = filePath;
-    if ((currentSha !== prevSha || currentPath !== prevFilePath) && monaco && diffEditor) {
+    const currentStaged = staged;
+    const currentIsWd = isWorkingDirectory;
+    if ((currentSha !== prevSha || currentPath !== prevFilePath || currentStaged !== prevStaged || currentIsWd !== prevIsWd) && monaco && diffEditor) {
       prevSha = currentSha;
       prevFilePath = currentPath;
-      loadDiff(currentSha, currentPath);
+      prevStaged = currentStaged;
+      prevIsWd = currentIsWd;
+      loadDiff(currentSha, currentPath, currentIsWd, currentStaged);
     }
   });
 

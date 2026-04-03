@@ -12,3 +12,8 @@ export interface FileDiff {
   original: string;
   modified: string;
 }
+
+export interface WorkingDirectoryStatus {
+  staged: ChangedFile[];
+  unstaged: ChangedFile[];
+}
