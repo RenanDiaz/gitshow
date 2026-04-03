@@ -1,10 +1,15 @@
 <script lang="ts">
+  import type { Commit } from './graphTypes';
   import { LANE_WIDTH, ROW_HEIGHT, GRAPH_PADDING } from './graphTypes';
   import { computeLayout } from './graphLayout';
   import CommitNode from './CommitNode.svelte';
   import GraphEdge from './GraphEdge.svelte';
   import CommitRow from './CommitRow.svelte';
   import { SAMPLE_COMMITS } from './sampleData';
+
+  let { oncommitselect }: {
+    oncommitselect?: (commit: Commit | null) => void;
+  } = $props();
 
   let selectedHash = $state<string | null>(null);
 
@@ -19,6 +24,10 @@
 
   function handleSelect(hash: string) {
     selectedHash = selectedHash === hash ? null : hash;
+    const commit = selectedHash
+      ? layout.commits.find(c => c.hash === selectedHash) ?? null
+      : null;
+    oncommitselect?.(commit);
   }
 </script>
 
