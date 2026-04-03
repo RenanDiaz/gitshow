@@ -3,7 +3,7 @@
   import type { ChangedFile } from './types';
   import FileListItem from './FileListItem.svelte';
 
-  let { sha }: { sha: string } = $props();
+  let { sha, onfileselect }: { sha: string; onfileselect?: (path: string) => void } = $props();
 
   let files = $state<ChangedFile[]>([]);
   let loading = $state(false);
@@ -41,6 +41,12 @@
         insertions: f.insertions,
         deletions: f.deletions,
       }));
+
+      // Auto-select the first file
+      if (files.length > 0) {
+        selectedPath = files[0].path;
+        onfileselect?.(files[0].path);
+      }
     } catch (e) {
       error = String(e);
       files = [];
@@ -81,7 +87,7 @@
         <FileListItem
           {file}
           selected={selectedPath === file.path}
-          onclick={() => { selectedPath = file.path; }}
+          onclick={() => { selectedPath = file.path; onfileselect?.(file.path); }}
         />
       {/each}
     {/if}
