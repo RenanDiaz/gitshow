@@ -1,6 +1,8 @@
 use serde::Serialize;
 use tauri_plugin_shell::ShellExt;
 
+use crate::RepoState;
+
 #[derive(Debug, Serialize)]
 pub struct FileDiff {
     pub original: String,
@@ -22,15 +24,24 @@ pub struct WorkingDirectoryStatus {
     pub unstaged: Vec<ChangedFile>,
 }
 
+fn get_repo_path(state: &tauri::State<'_, RepoState>) -> Result<String, String> {
+    let repo = state.0.lock().map_err(|e| e.to_string())?;
+    repo.clone().ok_or_else(|| "No repository is open.".to_string())
+}
+
 #[tauri::command]
 pub async fn get_commit_files(
     app: tauri::AppHandle,
+    state: tauri::State<'_, RepoState>,
     sha: String,
 ) -> Result<Vec<ChangedFile>, String> {
+    let repo_path = get_repo_path(&state)?;
+
     let name_status_output = app
         .shell()
         .command("git")
         .args(["diff-tree", "--no-commit-id", "-r", "--name-status", "--find-renames", &sha])
+        .current_dir(&repo_path)
         .output()
         .await
         .map_err(|e| e.to_string())?;
@@ -43,6 +54,7 @@ pub async fn get_commit_files(
         .shell()
         .command("git")
         .args(["diff-tree", "--no-commit-id", "-r", "--numstat", &sha])
+        .current_dir(&repo_path)
         .output()
         .await
         .map_err(|e| e.to_string())?;
@@ -54,14 +66,12 @@ pub async fn get_commit_files(
     let name_status_str = String::from_utf8_lossy(&name_status_output.stdout);
     let numstat_str = String::from_utf8_lossy(&numstat_output.stdout);
 
-    // Parse numstat into a map: path -> (insertions, deletions)
     let mut stats: std::collections::HashMap<String, (u32, u32)> = std::collections::HashMap::new();
     for line in numstat_str.lines() {
         let parts: Vec<&str> = line.split('\t').collect();
         if parts.len() >= 3 {
             let ins = parts[0].parse::<u32>().unwrap_or(0);
             let del = parts[1].parse::<u32>().unwrap_or(0);
-            // For renames, numstat shows the new path (last element)
             let path = parts.last().unwrap().to_string();
             stats.insert(path, (ins, del));
         }
@@ -79,11 +89,9 @@ pub async fn get_commit_files(
         }
 
         let raw_status = parts[0];
-        // Rename status looks like R085, extract just the letter
         let status = raw_status.chars().next().unwrap_or('M').to_string();
 
         let (path, old_path) = if status == "R" || status == "C" {
-            // Rename/Copy: old_path -> new_path
             if parts.len() >= 3 {
                 (parts[2].to_string(), Some(parts[1].to_string()))
             } else {
@@ -112,14 +120,17 @@ pub async fn get_commit_files(
 #[tauri::command]
 pub async fn get_file_diff(
     app: tauri::AppHandle,
+    state: tauri::State<'_, RepoState>,
     sha: String,
     file_path: String,
 ) -> Result<FileDiff, String> {
-    // Get parent SHA
+    let repo_path = get_repo_path(&state)?;
+
     let parent_output = app
         .shell()
         .command("git")
         .args(["rev-parse", &format!("{}^", sha)])
+        .current_dir(&repo_path)
         .output()
         .await
         .map_err(|e| e.to_string())?;
@@ -131,12 +142,12 @@ pub async fn get_file_diff(
         String::new()
     };
 
-    // Get original content (parent version)
     let original = if has_parent {
         let output = app
             .shell()
             .command("git")
             .args(["show", &format!("{}:{}", parent_sha, file_path)])
+            .current_dir(&repo_path)
             .output()
             .await
             .map_err(|e| e.to_string())?;
@@ -144,19 +155,17 @@ pub async fn get_file_diff(
         if output.status.success() {
             String::from_utf8_lossy(&output.stdout).to_string()
         } else {
-            // File didn't exist in parent (added file)
             String::new()
         }
     } else {
-        // No parent (initial commit) — original is empty
         String::new()
     };
 
-    // Get modified content (current commit version)
     let mod_output = app
         .shell()
         .command("git")
         .args(["show", &format!("{}:{}", sha, file_path)])
+        .current_dir(&repo_path)
         .output()
         .await
         .map_err(|e| e.to_string())?;
@@ -164,7 +173,6 @@ pub async fn get_file_diff(
     let modified = if mod_output.status.success() {
         String::from_utf8_lossy(&mod_output.stdout).to_string()
     } else {
-        // File doesn't exist at this commit (deleted file)
         String::new()
     };
 
@@ -174,11 +182,15 @@ pub async fn get_file_diff(
 #[tauri::command]
 pub async fn get_working_directory_status(
     app: tauri::AppHandle,
+    state: tauri::State<'_, RepoState>,
 ) -> Result<WorkingDirectoryStatus, String> {
+    let repo_path = get_repo_path(&state)?;
+
     let status_output = app
         .shell()
         .command("git")
         .args(["status", "--porcelain=v2", "--branch"])
+        .current_dir(&repo_path)
         .output()
         .await
         .map_err(|e| e.to_string())?;
@@ -198,7 +210,6 @@ pub async fn get_working_directory_status(
         }
 
         if line.starts_with('1') {
-            // Ordinary changed entry: 1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>
             let parts: Vec<&str> = line.splitn(9, ' ').collect();
             if parts.len() < 9 {
                 continue;
@@ -240,7 +251,6 @@ pub async fn get_working_directory_status(
                 });
             }
         } else if line.starts_with('2') {
-            // Renamed/copied entry: 2 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <X><score> <path><sep><origPath>
             let parts: Vec<&str> = line.splitn(10, ' ').collect();
             if parts.len() < 10 {
                 continue;
@@ -250,7 +260,6 @@ pub async fn get_working_directory_status(
             let x = xy.chars().next().unwrap_or('.');
             let y = xy.chars().nth(1).unwrap_or('.');
 
-            // paths are separated by tab: path\torigPath
             let path_parts: Vec<&str> = paths_str.split('\t').collect();
             let path = path_parts[0].to_string();
             let orig_path = path_parts.get(1).map(|s| s.to_string());
@@ -280,7 +289,6 @@ pub async fn get_working_directory_status(
                 });
             }
         } else if line.starts_with('?') {
-            // Untracked: ? <path>
             let path = line[2..].to_string();
             unstaged.push(ChangedFile {
                 status: "A".to_string(),
@@ -298,6 +306,7 @@ pub async fn get_working_directory_status(
             .shell()
             .command("git")
             .args(["diff", "--cached", "--numstat"])
+            .current_dir(&repo_path)
             .output()
             .await
             .map_err(|e| e.to_string())?;
@@ -330,6 +339,7 @@ pub async fn get_working_directory_status(
             .shell()
             .command("git")
             .args(["diff", "--numstat"])
+            .current_dir(&repo_path)
             .output()
             .await
             .map_err(|e| e.to_string())?;
@@ -362,11 +372,14 @@ pub async fn get_working_directory_status(
 #[tauri::command]
 pub async fn stage_files(
     app: tauri::AppHandle,
+    state: tauri::State<'_, RepoState>,
     paths: Vec<String>,
 ) -> Result<(), String> {
     if paths.is_empty() {
         return Ok(());
     }
+
+    let repo_path = get_repo_path(&state)?;
 
     let mut args = vec!["add", "--"];
     let path_refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
@@ -376,6 +389,7 @@ pub async fn stage_files(
         .shell()
         .command("git")
         .args(&args)
+        .current_dir(&repo_path)
         .output()
         .await
         .map_err(|e| e.to_string())?;
@@ -390,11 +404,14 @@ pub async fn stage_files(
 #[tauri::command]
 pub async fn unstage_files(
     app: tauri::AppHandle,
+    state: tauri::State<'_, RepoState>,
     paths: Vec<String>,
 ) -> Result<(), String> {
     if paths.is_empty() {
         return Ok(());
     }
+
+    let repo_path = get_repo_path(&state)?;
 
     let mut args = vec!["restore", "--staged", "--"];
     let path_refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
@@ -404,6 +421,7 @@ pub async fn unstage_files(
         .shell()
         .command("git")
         .args(&args)
+        .current_dir(&repo_path)
         .output()
         .await
         .map_err(|e| e.to_string())?;
@@ -416,11 +434,17 @@ pub async fn unstage_files(
 }
 
 #[tauri::command]
-pub async fn stage_all(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn stage_all(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, RepoState>,
+) -> Result<(), String> {
+    let repo_path = get_repo_path(&state)?;
+
     let output = app
         .shell()
         .command("git")
         .args(["add", "-A"])
+        .current_dir(&repo_path)
         .output()
         .await
         .map_err(|e| e.to_string())?;
@@ -433,11 +457,17 @@ pub async fn stage_all(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn unstage_all(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn unstage_all(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, RepoState>,
+) -> Result<(), String> {
+    let repo_path = get_repo_path(&state)?;
+
     let output = app
         .shell()
         .command("git")
         .args(["reset", "HEAD"])
+        .current_dir(&repo_path)
         .output()
         .await
         .map_err(|e| e.to_string())?;
@@ -452,12 +482,15 @@ pub async fn unstage_all(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub async fn create_commit(
     app: tauri::AppHandle,
+    state: tauri::State<'_, RepoState>,
     message: String,
     amend: bool,
 ) -> Result<(), String> {
     if message.is_empty() {
         return Err("Commit message cannot be empty".to_string());
     }
+
+    let repo_path = get_repo_path(&state)?;
 
     let mut args = vec!["commit"];
     if amend {
@@ -470,6 +503,7 @@ pub async fn create_commit(
         .shell()
         .command("git")
         .args(&args)
+        .current_dir(&repo_path)
         .output()
         .await
         .map_err(|e| e.to_string())?;
@@ -484,16 +518,18 @@ pub async fn create_commit(
 #[tauri::command]
 pub async fn get_working_directory_diff(
     app: tauri::AppHandle,
+    state: tauri::State<'_, RepoState>,
     file_path: String,
     staged: bool,
 ) -> Result<FileDiff, String> {
-    // Get the index/HEAD version (original)
+    let repo_path = get_repo_path(&state)?;
+
     let original = if staged {
-        // For staged: original is HEAD version
         let output = app
             .shell()
             .command("git")
             .args(["show", &format!("HEAD:{}", file_path)])
+            .current_dir(&repo_path)
             .output()
             .await
             .map_err(|e| e.to_string())?;
@@ -504,11 +540,11 @@ pub async fn get_working_directory_diff(
             String::new()
         }
     } else {
-        // For unstaged: original is index version (staged or HEAD)
         let output = app
             .shell()
             .command("git")
             .args(["show", &format!(":{}", file_path)])
+            .current_dir(&repo_path)
             .output()
             .await
             .map_err(|e| e.to_string())?;
@@ -520,13 +556,12 @@ pub async fn get_working_directory_diff(
         }
     };
 
-    // Get the modified version
     let modified = if staged {
-        // For staged: modified is the index version
         let output = app
             .shell()
             .command("git")
             .args(["show", &format!(":{}", file_path)])
+            .current_dir(&repo_path)
             .output()
             .await
             .map_err(|e| e.to_string())?;
@@ -537,11 +572,12 @@ pub async fn get_working_directory_diff(
             String::new()
         }
     } else {
-        // For unstaged: modified is the working tree version — read the file directly
+        // Read the working tree file using an absolute path
+        let abs_path = std::path::Path::new(&repo_path).join(&file_path);
         let output = app
             .shell()
             .command("cat")
-            .args([&file_path])
+            .args([abs_path.to_string_lossy().as_ref()])
             .output()
             .await
             .map_err(|e| e.to_string())?;
