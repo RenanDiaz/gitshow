@@ -1,10 +1,22 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { open } from '@tauri-apps/plugin-dialog';
-  import type { Commit } from '$lib/components/graph/graphTypes';
+  import type { Commit, Ref } from '$lib/components/graph/graphTypes';
   import type { WorkingDirectoryStatus } from '$lib/components/detail/types';
   import CommitGraph from '$lib/components/graph/CommitGraph.svelte';
   import DetailPanel from '$lib/components/detail/DetailPanel.svelte';
+
+  interface CommitLogEntry {
+    hash: string;
+    parents: string[];
+    author: string;
+    email: string;
+    timestamp: number;
+    refs: Ref[];
+    subject: string;
+  }
+
+  const COMMITS_PER_PAGE = 500;
 
   let selectedCommit = $state<Commit | null>(null);
   let showWorkingDirectory = $state(false);
@@ -13,9 +25,39 @@
   let dragging = $state(false);
   let containerEl: HTMLElement | undefined = $state();
   let repoPath = $state<string | null>(null);
+  let commits = $state<CommitLogEntry[]>([]);
+  let loadingCommits = $state(false);
+  let allCommitsLoaded = $state(false);
 
   let showDetailPanel = $derived(selectedCommit !== null || showWorkingDirectory);
   let repoName = $derived(repoPath ? repoPath.split('/').pop() ?? repoPath : null);
+
+  async function loadCommits(skip: number) {
+    if (loadingCommits) return;
+    loadingCommits = true;
+    try {
+      const entries = await invoke<CommitLogEntry[]>('get_commit_log', {
+        skip,
+        limit: COMMITS_PER_PAGE,
+      });
+      if (skip === 0) {
+        commits = entries;
+      } else {
+        commits = [...commits, ...entries];
+      }
+      allCommitsLoaded = entries.length < COMMITS_PER_PAGE;
+    } catch (err) {
+      console.error('Failed to load commits:', err);
+    } finally {
+      loadingCommits = false;
+    }
+  }
+
+  function handleScrollEnd() {
+    if (!loadingCommits && !allCommitsLoaded) {
+      loadCommits(commits.length);
+    }
+  }
 
   async function checkForChanges() {
     if (!repoPath) return;
@@ -30,6 +72,7 @@
   $effect(() => {
     if (repoPath) {
       checkForChanges();
+      loadCommits(0);
     }
   });
 
@@ -61,6 +104,7 @@
 
   function handleRefresh() {
     checkForChanges();
+    loadCommits(0);
   }
 
   function startResize(e: MouseEvent) {
@@ -100,8 +144,11 @@
     >
       <div class="graph-pane" style="width: {showDetailPanel ? splitPercent + '%' : '100%'}">
         <CommitGraph
+          {commits}
           oncommitselect={handleCommitSelect}
           onworkingdirselect={handleWorkingDirSelect}
+          onscrollend={handleScrollEnd}
+          loading={loadingCommits}
           {hasChanges}
         />
       </div>

@@ -47,6 +47,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             open_repository,
             get_current_repo,
+            commands::git::get_commit_log,
             commands::git::get_commit_files,
             commands::git::get_file_diff,
             commands::git::get_working_directory_status,
