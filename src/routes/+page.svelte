@@ -5,6 +5,7 @@
   import type { WorkingDirectoryStatus } from '$lib/components/detail/types';
   import CommitGraph from '$lib/components/graph/CommitGraph.svelte';
   import DetailPanel from '$lib/components/detail/DetailPanel.svelte';
+  import { getMockExchangeCommits } from '$lib/components/graph/mockExchangeData';
 
   interface CommitLogEntry {
     hash: string;
@@ -69,10 +70,30 @@
     }
   }
 
+  // DEV MODE: Load mock data when Tauri backend is not available
+  function loadMockData() {
+    const mockCommits = getMockExchangeCommits();
+    commits = mockCommits as CommitLogEntry[];
+    allCommitsLoaded = true;
+    repoPath = '/mock/Exchange';
+    hasChanges = true;
+  }
+
   $effect(() => {
-    if (repoPath) {
+    if (repoPath && repoPath !== '/mock/Exchange') {
       checkForChanges();
       loadCommits(0);
+    }
+  });
+
+  // Auto-load mock data if Tauri is not available (browser dev mode)
+  $effect(() => {
+    try {
+      if (typeof window !== 'undefined' && !window.__TAURI_INTERNALS__) {
+        loadMockData();
+      }
+    } catch {
+      // Tauri available, skip mock
     }
   });
 

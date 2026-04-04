@@ -15,6 +15,10 @@ export interface LayoutResult {
   edges: GraphEdge[];
   laneColors: string[];
   totalLanes: number;
+  /** Maps lane index -> branch name (for the first commit that introduces the lane) */
+  laneBranchNames: Map<number, string>;
+  /** Set of commit hashes that are the first appearance of their lane */
+  laneIntroducers: Map<string, { lane: number; name: string }>;
 }
 
 /**
@@ -31,6 +35,11 @@ export function computeLayout(rawCommits: Omit<Commit, 'column' | 'row'>[]): Lay
   // Each slot: hash of the next expected commit in that lane, or null if free
   const lanes: (string | null)[] = [];
   const laneColors: string[] = [];
+  const laneBranchNames = new Map<number, string>();
+  const laneIntroducers = new Map<string, { lane: number; name: string }>();
+
+  // Track which lanes have had their first commit rendered
+  const laneFirstSeen = new Set<number>();
 
   function findLane(hash: string): number {
     for (let i = 0; i < lanes.length; i++) {
@@ -69,6 +78,18 @@ export function computeLayout(rawCommits: Omit<Commit, 'column' | 'row'>[]): Lay
     const commit: Commit = { ...raw, column: col, row };
     commits.push(commit);
     commitIndex.set(commit.hash, commit);
+
+    // Track first appearance of this lane for branch labels
+    if (!laneFirstSeen.has(col)) {
+      laneFirstSeen.add(col);
+      const branchRef = raw.refs.find(r => r.type === 'local' || r.type === 'head');
+      const remoteBranch = raw.refs.find(r => r.type === 'remote');
+      const refName = branchRef?.name ?? remoteBranch?.name;
+      if (refName) {
+        laneBranchNames.set(col, refName);
+        laneIntroducers.set(commit.hash, { lane: col, name: refName });
+      }
+    }
 
     const parents = raw.parents;
     if (parents.length >= 1) {
@@ -119,7 +140,7 @@ export function computeLayout(rawCommits: Omit<Commit, 'column' | 'row'>[]): Lay
   }
 
   const totalLanes = lanes.length || 1;
-  return { commits, edges, laneColors, totalLanes };
+  return { commits, edges, laneColors, totalLanes, laneBranchNames, laneIntroducers };
 }
 
 function branchColorFromName(name: string): string {

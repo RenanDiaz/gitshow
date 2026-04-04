@@ -37,3 +37,9 @@ export const LANE_WIDTH = 16;
 export const ROW_HEIGHT = 32;
 export const NODE_RADIUS = 5;
 export const GRAPH_PADDING = 20;
+
+/** Column widths for the commit info area */
+export const COL_SHA_WIDTH = 80;
+export const COL_AUTHOR_WIDTH = 120;
+export const COL_DATE_WIDTH = 100;
+export const COL_GAP = 14;
