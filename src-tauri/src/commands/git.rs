@@ -4,6 +4,24 @@ use tauri_plugin_shell::ShellExt;
 use crate::RepoState;
 
 #[derive(Debug, Serialize)]
+pub struct CommitRef {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub ref_type: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CommitLogEntry {
+    pub hash: String,
+    pub parents: Vec<String>,
+    pub author: String,
+    pub email: String,
+    pub timestamp: i64,
+    pub refs: Vec<CommitRef>,
+    pub subject: String,
+}
+
+#[derive(Debug, Serialize)]
 pub struct FileDiff {
     pub original: String,
     pub modified: String,
@@ -27,6 +45,122 @@ pub struct WorkingDirectoryStatus {
 fn get_repo_path(state: &tauri::State<'_, RepoState>) -> Result<String, String> {
     let repo = state.0.lock().map_err(|e| e.to_string())?;
     repo.clone().ok_or_else(|| "No repository is open.".to_string())
+}
+
+#[tauri::command]
+pub async fn get_commit_log(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, RepoState>,
+    skip: u32,
+    limit: u32,
+) -> Result<Vec<CommitLogEntry>, String> {
+    let repo_path = get_repo_path(&state)?;
+
+    let output = app
+        .shell()
+        .command("git")
+        .args([
+            "log",
+            "--all",
+            "--format=%H%x00%P%x00%an%x00%ae%x00%at%x00%D%x00%s",
+            "--topo-order",
+            &format!("-n{}", limit),
+            &format!("--skip={}", skip),
+        ])
+        .current_dir(&repo_path)
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut entries: Vec<CommitLogEntry> = Vec::new();
+
+    for line in stdout.lines() {
+        if line.is_empty() {
+            continue;
+        }
+
+        let parts: Vec<&str> = line.splitn(7, '\0').collect();
+        if parts.len() < 7 {
+            continue;
+        }
+
+        let hash = parts[0].to_string();
+        let parents: Vec<String> = if parts[1].is_empty() {
+            Vec::new()
+        } else {
+            parts[1].split(' ').map(|s| s.to_string()).collect()
+        };
+        let author = parts[2].to_string();
+        let email = parts[3].to_string();
+        let timestamp = parts[4].parse::<i64>().unwrap_or(0);
+        let refs = parse_refs(parts[5]);
+        let subject = parts[6].to_string();
+
+        entries.push(CommitLogEntry {
+            hash,
+            parents,
+            author,
+            email,
+            timestamp,
+            refs,
+            subject,
+        });
+    }
+
+    Ok(entries)
+}
+
+fn parse_refs(raw: &str) -> Vec<CommitRef> {
+    if raw.is_empty() {
+        return Vec::new();
+    }
+
+    let mut refs = Vec::new();
+
+    for part in raw.split(", ") {
+        let trimmed = part.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if let Some(branch) = trimmed.strip_prefix("HEAD -> ") {
+            refs.push(CommitRef {
+                name: "HEAD".to_string(),
+                ref_type: "head".to_string(),
+            });
+            refs.push(CommitRef {
+                name: branch.to_string(),
+                ref_type: "local".to_string(),
+            });
+        } else if trimmed == "HEAD" {
+            refs.push(CommitRef {
+                name: "HEAD".to_string(),
+                ref_type: "head".to_string(),
+            });
+        } else if let Some(tag) = trimmed.strip_prefix("tag: ") {
+            refs.push(CommitRef {
+                name: tag.to_string(),
+                ref_type: "tag".to_string(),
+            });
+        } else if trimmed.contains('/') {
+            refs.push(CommitRef {
+                name: trimmed.to_string(),
+                ref_type: "remote".to_string(),
+            });
+        } else {
+            refs.push(CommitRef {
+                name: trimmed.to_string(),
+                ref_type: "local".to_string(),
+            });
+        }
+    }
+
+    refs
 }
 
 #[tauri::command]

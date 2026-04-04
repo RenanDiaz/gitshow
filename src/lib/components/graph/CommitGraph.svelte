@@ -5,19 +5,37 @@
   import CommitNode from './CommitNode.svelte';
   import GraphEdge from './GraphEdge.svelte';
   import CommitRow from './CommitRow.svelte';
-  import { SAMPLE_COMMITS } from './sampleData';
 
   const WORKING_DIR_HASH = '__working_directory__';
+  const SCROLL_THRESHOLD = 200;
 
-  let { oncommitselect, hasChanges = false, onworkingdirselect }: {
+  let {
+    commits = [],
+    oncommitselect,
+    hasChanges = false,
+    onworkingdirselect,
+    onscrollend,
+    loading = false,
+  }: {
+    commits?: Omit<Commit, 'column' | 'row'>[];
     oncommitselect?: (commit: Commit | null) => void;
     hasChanges?: boolean;
     onworkingdirselect?: () => void;
+    onscrollend?: () => void;
+    loading?: boolean;
   } = $props();
 
   let selectedHash = $state<string | null>(null);
 
-  let layout = $derived(computeLayout(SAMPLE_COMMITS));
+  let layout = $derived(computeLayout(commits));
+
+  function handleScroll(e: Event) {
+    const el = e.target as HTMLElement;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (distanceFromBottom < SCROLL_THRESHOLD) {
+      onscrollend?.();
+    }
+  }
 
   // Offset all rows by 1 when showing working directory node
   let rowOffset = $derived(hasChanges ? 1 : 0);
@@ -54,7 +72,7 @@
   }
 </script>
 
-<div class="graph-container">
+<div class="graph-container" onscroll={handleScroll}>
   <svg
     width={svgWidth}
     height={svgHeight}
@@ -143,6 +161,9 @@
       />
     {/each}
   </svg>
+  {#if loading}
+    <div class="loading-indicator">Loading more commits...</div>
+  {/if}
 </div>
 
 <style>
@@ -169,5 +190,11 @@
     font-weight: 600;
     fill: hsl(45, 85%, 55%);
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+  .loading-indicator {
+    text-align: center;
+    padding: 12px;
+    font-size: 12px;
+    color: var(--color-text-secondary, #aaa);
   }
 </style>
